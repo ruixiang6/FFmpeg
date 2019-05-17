@@ -57,7 +57,7 @@ static int libwebp_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         goto end;
     }
 
-    ret = ff_alloc_packet(pkt, mw.size);
+    ret = ff_alloc_packet2(avctx, pkt, mw.size, mw.size);
     if (ret < 0)
         goto end;
     memcpy(pkt->data, mw.mem, mw.size);
@@ -109,4 +109,5 @@ AVCodec ff_libwebp_encoder = {
     },
     .priv_class     = &class,
     .defaults       = libwebp_defaults,
+    .wrapper_name   = "libwebp",
 };

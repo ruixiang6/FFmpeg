@@ -31,7 +31,7 @@
 #include "libavutil/common.h"
 #include "libavutil/samplefmt.h"
 
-#define NUMBER_OF_FRAMES 200
+#define NUMBER_OF_AUDIO_FRAMES 200
 #define NAME_BUFF_SIZE 100
 
 /* generate i-th frame of test audio */
@@ -112,10 +112,10 @@ static int run_test(AVCodec *enc, AVCodec *dec, AVCodecContext *enc_ctx,
     AVFrame *in_frame, *out_frame;
     uint8_t *raw_in = NULL, *raw_out = NULL;
     int in_offset = 0, out_offset = 0;
-    int frame_data_size = 0;
     int result = 0;
     int got_output = 0;
     int i = 0;
+    int in_frame_bytes, out_frame_bytes;
 
     in_frame = av_frame_alloc();
     if (!in_frame) {
@@ -137,27 +137,32 @@ static int run_test(AVCodec *enc, AVCodec *dec, AVCodecContext *enc_ctx,
         return AVERROR(ENOMEM);
     }
 
-    raw_in = av_malloc(in_frame->linesize[0] * NUMBER_OF_FRAMES);
+    raw_in = av_malloc(in_frame->linesize[0] * NUMBER_OF_AUDIO_FRAMES);
     if (!raw_in) {
         av_log(NULL, AV_LOG_ERROR, "Can't allocate memory for raw_in\n");
         return AVERROR(ENOMEM);
     }
 
-    raw_out = av_malloc(in_frame->linesize[0] * NUMBER_OF_FRAMES);
+    raw_out = av_malloc(in_frame->linesize[0] * NUMBER_OF_AUDIO_FRAMES);
     if (!raw_out) {
         av_log(NULL, AV_LOG_ERROR, "Can't allocate memory for raw_out\n");
         return AVERROR(ENOMEM);
     }
 
-    for (i = 0; i < NUMBER_OF_FRAMES; i++) {
+    for (i = 0; i < NUMBER_OF_AUDIO_FRAMES; i++) {
         av_init_packet(&enc_pkt);
         enc_pkt.data = NULL;
         enc_pkt.size = 0;
 
         generate_raw_frame((uint16_t*)(in_frame->data[0]), i, enc_ctx->sample_rate,
                            enc_ctx->channels, enc_ctx->frame_size);
-        memcpy(raw_in + in_offset, in_frame->data[0], in_frame->linesize[0]);
-        in_offset += in_frame->linesize[0];
+        in_frame_bytes = in_frame->nb_samples * in_frame->channels * sizeof(uint16_t);
+        if (in_frame_bytes > in_frame->linesize[0]) {
+            av_log(NULL, AV_LOG_ERROR, "Incorrect value of input frame linesize\n");
+            return 1;
+        }
+        memcpy(raw_in + in_offset, in_frame->data[0], in_frame_bytes);
+        in_offset += in_frame_bytes;
         result = avcodec_encode_audio2(enc_ctx, &enc_pkt, in_frame, &got_output);
         if (result < 0) {
             av_log(NULL, AV_LOG_ERROR, "Error encoding audio frame\n");
@@ -192,14 +197,19 @@ static int run_test(AVCodec *enc, AVCodec *dec, AVCodecContext *enc_ctx,
                     av_log(NULL, AV_LOG_ERROR, "Error frames before and after decoding has different sample format\n");
                     return AVERROR_UNKNOWN;
                 }
-                memcpy(raw_out + out_offset, out_frame->data[0], out_frame->linesize[0]);
-                out_offset += out_frame->linesize[0];
+                out_frame_bytes = out_frame->nb_samples * out_frame->channels * sizeof(uint16_t);
+                if (out_frame_bytes > out_frame->linesize[0]) {
+                    av_log(NULL, AV_LOG_ERROR, "Incorrect value of output frame linesize\n");
+                    return 1;
+                }
+                memcpy(raw_out + out_offset, out_frame->data[0], out_frame_bytes);
+                out_offset += out_frame_bytes;
             }
         }
-        av_free_packet(&enc_pkt);
+        av_packet_unref(&enc_pkt);
     }
 
-    if (memcmp(raw_in, raw_out, frame_data_size * NUMBER_OF_FRAMES) != 0) {
+    if (memcmp(raw_in, raw_out, out_frame_bytes * NUMBER_OF_AUDIO_FRAMES) != 0) {
         av_log(NULL, AV_LOG_ERROR, "Output differs\n");
         return 1;
     }
@@ -234,8 +244,6 @@ int main(void)
     uint64_t channel_layouts[] = {AV_CH_LAYOUT_STEREO, AV_CH_LAYOUT_5POINT1_BACK, AV_CH_LAYOUT_SURROUND, AV_CH_LAYOUT_STEREO_DOWNMIX};
     int sample_rates[] = {8000, 44100, 48000, 192000};
     int cl, sr;
-
-    avcodec_register_all();
 
     enc = avcodec_find_encoder(AV_CODEC_ID_FLAC);
     if (!enc) {

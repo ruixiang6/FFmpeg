@@ -1,5 +1,5 @@
 /*
- * H263 internal header
+ * H.263 internal header
  *
  * This file is part of FFmpeg.
  *
@@ -27,9 +27,7 @@
 #include "h263data.h"
 #include "rl.h"
 
-#if !FF_API_ASPECT_EXTENDED
 #define FF_ASPECT_EXTENDED 15
-#endif
 #define INT_BIT (CHAR_BIT * sizeof(int))
 
 // The defines below define the number of bits that are read at once for
@@ -87,7 +85,7 @@ int ff_h263_decode_mb(MpegEncContext *s,
                       int16_t block[6][64]);
 
 /**
- * Return the value of the 3bit "source format" syntax element.
+ * Return the value of the 3-bit "source format" syntax element.
  * This represents some standard picture dimensions or indicates that
  * width&height are explicitly stored later.
  */
@@ -116,7 +114,7 @@ static inline int h263_get_motion_length(int val, int f_code){
 }
 
 static inline void ff_h263_encode_motion_vector(MpegEncContext * s, int x, int y, int f_code){
-    if (s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT) {
+    if (s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT) {
         skip_put_bits(&s->pb,
             h263_get_motion_length(x, f_code)
            +h263_get_motion_length(y, f_code));

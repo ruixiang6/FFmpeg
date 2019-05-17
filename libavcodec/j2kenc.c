@@ -17,7 +17,45 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with FFmpeg; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ *
+ * **********************************************************************************************************************
+ *
+ *
+ *
+ * This source code incorporates work covered by the following copyright and
+ * permission notice:
+ *
+ * Copyright (c) 2002-2007, Communications and Remote Sensing Laboratory, Universite catholique de Louvain (UCL), Belgium
+ * Copyright (c) 2002-2007, Professor Benoit Macq
+ * Copyright (c) 2001-2003, David Janssens
+ * Copyright (c) 2002-2003, Yannick Verschueren
+ * Copyright (c) 2003-2007, Francois-Olivier Devaux and Antonin Descampe
+ * Copyright (c) 2005, Herve Drolon, FreeImage Team
+ * Copyright (c) 2007, Callum Lerwick <seg@haxxed.com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS `AS IS'
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
+
 
 /**
  * JPEG2000 image encoder
@@ -31,7 +69,9 @@
 #include "bytestream.h"
 #include "jpeg2000.h"
 #include "libavutil/common.h"
+#include "libavutil/pixdesc.h"
 #include "libavutil/opt.h"
+#include "libavutil/intreadwrite.h"
 
 #define NMSEDEC_BITS 7
 #define NMSEDEC_FRACBITS (NMSEDEC_BITS-1)
@@ -88,6 +128,7 @@ typedef struct {
     Jpeg2000Tile *tile;
 
     int format;
+    int pred;
 } Jpeg2000EncoderContext;
 
 
@@ -314,6 +355,25 @@ static int put_qcd(Jpeg2000EncoderContext *s, int compno)
     else // QSTY_SE
         for (i = 0; i < codsty->nreslevels * 3 - 2; i++)
             bytestream_put_be16(&s->buf, (qntsty->expn[i] << 11) | qntsty->mant[i]);
+    return 0;
+}
+
+static int put_com(Jpeg2000EncoderContext *s, int compno)
+{
+    int size = 4 + strlen(LIBAVCODEC_IDENT);
+
+    if (s->avctx->flags & AV_CODEC_FLAG_BITEXACT)
+        return 0;
+
+    if (s->buf_end - s->buf < size + 2)
+        return -1;
+
+    bytestream_put_be16(&s->buf, JPEG2000_COM);
+    bytestream_put_be16(&s->buf, size);
+    bytestream_put_be16(&s->buf, 1); // General use (ISO/IEC 8859-15 (Latin) values)
+
+    bytestream_put_buffer(&s->buf, LIBAVCODEC_IDENT, strlen(LIBAVCODEC_IDENT));
+
     return 0;
 }
 
@@ -604,7 +664,8 @@ static void encode_cblk(Jpeg2000EncoderContext *s, Jpeg2000T1Context *t1, Jpeg20
         bpno = cblk->nonzerobits - 1;
     }
 
-    ff_mqc_initenc(&t1->mqc, cblk->data);
+    cblk->data[0] = 0;
+    ff_mqc_initenc(&t1->mqc, cblk->data + 1);
 
     for (passno = 0; bpno >= 0; passno++){
         nmsedec=0;
@@ -630,7 +691,8 @@ static void encode_cblk(Jpeg2000EncoderContext *s, Jpeg2000T1Context *t1, Jpeg20
     cblk->npasses = passno;
     cblk->ninclpasses = passno;
 
-    cblk->passes[passno-1].rate = ff_mqc_flush_to(&t1->mqc, cblk->passes[passno-1].flushed, &cblk->passes[passno-1].flushed_len);
+    if (passno)
+        cblk->passes[passno-1].rate = ff_mqc_flush_to(&t1->mqc, cblk->passes[passno-1].flushed, &cblk->passes[passno-1].flushed_len);
 }
 
 /* tier-2 routines: */
@@ -737,7 +799,7 @@ static int encode_packet(Jpeg2000EncoderContext *s, Jpeg2000ResLevel *rlevel, in
                 if (cblk->ninclpasses){
                     if (s->buf_end - s->buf < cblk->passes[cblk->ninclpasses-1].rate)
                         return -1;
-                    bytestream_put_buffer(&s->buf, cblk->data,   cblk->passes[cblk->ninclpasses-1].rate
+                    bytestream_put_buffer(&s->buf, cblk->data + 1,   cblk->passes[cblk->ninclpasses-1].rate
                                                                - cblk->passes[cblk->ninclpasses-1].flushed_len);
                     bytestream_put_buffer(&s->buf, cblk->passes[cblk->ninclpasses-1].flushed,
                                                    cblk->passes[cblk->ninclpasses-1].flushed_len);
@@ -878,6 +940,12 @@ static int encode_tile(Jpeg2000EncoderContext *s, Jpeg2000Tile *tile, int tileno
                                 }
                             }
                         }
+                        if (!prec->cblk[cblkno].data)
+                            prec->cblk[cblkno].data = av_malloc(1 + 8192);
+                        if (!prec->cblk[cblkno].passes)
+                            prec->cblk[cblkno].passes = av_malloc_array(JPEG2000_MAX_PASSES, sizeof (*prec->cblk[cblkno].passes));
+                        if (!prec->cblk[cblkno].data || !prec->cblk[cblkno].passes)
+                            return AVERROR(ENOMEM);
                         encode_cblk(s, &t1, prec->cblk + cblkno, tile, xx1 - xx0, yy1 - yy0,
                                     bandpos, codsty->nreslevels - reslevelno - 1);
                         xx0 = xx1;
@@ -936,7 +1004,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     Jpeg2000EncoderContext *s = avctx->priv_data;
     uint8_t *chunkstart, *jp2cstart, *jp2hstart;
 
-    if ((ret = ff_alloc_packet2(avctx, pkt, avctx->width*avctx->height*9 + FF_MIN_BUFFER_SIZE)) < 0)
+    if ((ret = ff_alloc_packet2(avctx, pkt, avctx->width*avctx->height*9 + AV_INPUT_BUFFER_MIN_SIZE, 0)) < 0)
         return ret;
 
     // init:
@@ -962,6 +1030,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         bytestream_put_buffer(&s->buf, "ftyp", 4);
         bytestream_put_buffer(&s->buf, "jp2\040\040", 4);
         bytestream_put_be32(&s->buf, 0);
+        bytestream_put_buffer(&s->buf, "jp2\040", 4);
         update_size(chunkstart, s->buf);
 
         jp2hstart = s->buf;
@@ -986,14 +1055,38 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         bytestream_put_byte(&s->buf, 1);
         bytestream_put_byte(&s->buf, 0);
         bytestream_put_byte(&s->buf, 0);
-        if (s->ncomponents == 1) {
-            bytestream_put_be32(&s->buf, 17);
-        } else if (avctx->pix_fmt == AV_PIX_FMT_RGB24) {
+        if (avctx->pix_fmt == AV_PIX_FMT_RGB24 || avctx->pix_fmt == AV_PIX_FMT_PAL8) {
             bytestream_put_be32(&s->buf, 16);
+        } else if (s->ncomponents == 1) {
+            bytestream_put_be32(&s->buf, 17);
         } else {
             bytestream_put_be32(&s->buf, 18);
         }
         update_size(chunkstart, s->buf);
+        if (avctx->pix_fmt == AV_PIX_FMT_PAL8) {
+            int i;
+            uint8_t *palette = pict->data[1];
+            chunkstart = s->buf;
+            bytestream_put_be32(&s->buf, 0);
+            bytestream_put_buffer(&s->buf, "pclr", 4);
+            bytestream_put_be16(&s->buf, AVPALETTE_COUNT);
+            bytestream_put_byte(&s->buf, 3); // colour channels
+            bytestream_put_be24(&s->buf, 0x070707); //colour depths
+            for (i = 0; i < AVPALETTE_COUNT; i++) {
+                bytestream_put_be24(&s->buf, HAVE_BIGENDIAN ? AV_RB24(palette + 1) : AV_RL24(palette));
+                palette += 4;
+            }
+            update_size(chunkstart, s->buf);
+            chunkstart = s->buf;
+            bytestream_put_be32(&s->buf, 0);
+            bytestream_put_buffer(&s->buf, "cmap", 4);
+            for (i = 0; i < 3; i++) {
+                bytestream_put_be16(&s->buf, 0); // component
+                bytestream_put_byte(&s->buf, 1); // palette mapping
+                bytestream_put_byte(&s->buf, i); // index
+            }
+            update_size(chunkstart, s->buf);
+        }
         update_size(jp2hstart, s->buf);
 
         jp2cstart = s->buf;
@@ -1009,6 +1102,8 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     if ((ret = put_cod(s)) < 0)
         return ret;
     if ((ret = put_qcd(s, 0)) < 0)
+        return ret;
+    if ((ret = put_com(s, 0)) < 0)
         return ret;
 
     for (tileno = 0; tileno < s->numXtiles * s->numYtiles; tileno++){
@@ -1047,6 +1142,19 @@ static av_cold int j2kenc_init(AVCodecContext *avctx)
     s->avctx = avctx;
     av_log(s->avctx, AV_LOG_DEBUG, "init\n");
 
+#if FF_API_PRIVATE_OPT
+FF_DISABLE_DEPRECATION_WARNINGS
+    if (avctx->prediction_method)
+        s->pred = avctx->prediction_method;
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
+
+    if (avctx->pix_fmt == AV_PIX_FMT_PAL8 && (s->pred != FF_DWT97_INT || s->format != CODEC_JP2)) {
+        av_log(s->avctx, AV_LOG_WARNING, "Forcing lossless jp2 for pal8\n");
+        s->pred = FF_DWT97_INT;
+        s->format = CODEC_JP2;
+    }
+
     // defaults:
     // TODO: implement setting non-standard precinct size
     memset(codsty->log2_prec_widths , 15, sizeof(codsty->log2_prec_widths ));
@@ -1055,12 +1163,14 @@ static av_cold int j2kenc_init(AVCodecContext *avctx)
     codsty->nreslevels       = 7;
     codsty->log2_cblk_width  = 4;
     codsty->log2_cblk_height = 4;
-    codsty->transform        = avctx->prediction_method ? FF_DWT53 : FF_DWT97_INT;
+    codsty->transform        = s->pred ? FF_DWT53 : FF_DWT97_INT;
 
     qntsty->nguardbits       = 1;
 
-    s->tile_width            = 256;
-    s->tile_height           = 256;
+    if ((s->tile_width  & (s->tile_width -1)) ||
+        (s->tile_height & (s->tile_height-1))) {
+        av_log(avctx, AV_LOG_WARNING, "Tile dimension not a power of 2\n");
+    }
 
     if (codsty->transform == FF_DWT53)
         qntsty->quantsty = JPEG2000_QSTY_NONE;
@@ -1075,13 +1185,15 @@ static av_cold int j2kenc_init(AVCodecContext *avctx)
 
     if (avctx->pix_fmt == AV_PIX_FMT_RGB24){
         s->ncomponents = 3;
-    } else if (avctx->pix_fmt == AV_PIX_FMT_GRAY8){
+    } else if (avctx->pix_fmt == AV_PIX_FMT_GRAY8 || avctx->pix_fmt == AV_PIX_FMT_PAL8){
         s->ncomponents = 1;
     } else{ // planar YUV
         s->planar = 1;
         s->ncomponents = 3;
-        avcodec_get_chroma_sub_sample(avctx->pix_fmt,
-                s->chroma_shift, s->chroma_shift + 1);
+        ret = av_pix_fmt_get_chroma_sub_sample(avctx->pix_fmt,
+                                               s->chroma_shift, s->chroma_shift + 1);
+        if (ret)
+            return ret;
     }
 
     ff_jpeg2000_init_tier1_luts();
@@ -1113,6 +1225,12 @@ static const AVOption options[] = {
     { "format",        "Codec Format",      OFFSET(format),        AV_OPT_TYPE_INT,   { .i64 = CODEC_JP2   }, CODEC_J2K, CODEC_JP2,   VE, "format"      },
     { "j2k",           NULL,                0,                     AV_OPT_TYPE_CONST, { .i64 = CODEC_J2K   }, 0,         0,           VE, "format"      },
     { "jp2",           NULL,                0,                     AV_OPT_TYPE_CONST, { .i64 = CODEC_JP2   }, 0,         0,           VE, "format"      },
+    { "tile_width",    "Tile Width",        OFFSET(tile_width),    AV_OPT_TYPE_INT,   { .i64 = 256         }, 1,     1<<30,           VE, },
+    { "tile_height",   "Tile Height",       OFFSET(tile_height),   AV_OPT_TYPE_INT,   { .i64 = 256         }, 1,     1<<30,           VE, },
+    { "pred",          "DWT Type",          OFFSET(pred),          AV_OPT_TYPE_INT,   { .i64 = 0           }, 0,         1,           VE, "pred"        },
+    { "dwt97int",      NULL,                0,                     AV_OPT_TYPE_CONST, { .i64 = 0           }, INT_MIN, INT_MAX,       VE, "pred"        },
+    { "dwt53",         NULL,                0,                     AV_OPT_TYPE_CONST, { .i64 = 0           }, INT_MIN, INT_MAX,       VE, "pred"        },
+
     { NULL }
 };
 
@@ -1132,12 +1250,11 @@ AVCodec ff_jpeg2000_encoder = {
     .init           = j2kenc_init,
     .encode2        = encode_frame,
     .close          = j2kenc_destroy,
-    .capabilities   = CODEC_CAP_EXPERIMENTAL,
     .pix_fmts       = (const enum AVPixelFormat[]) {
         AV_PIX_FMT_RGB24, AV_PIX_FMT_YUV444P, AV_PIX_FMT_GRAY8,
-/*      AV_PIX_FMT_YUV420P,
-        AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUV444P,
-        AV_PIX_FMT_YUV410P, AV_PIX_FMT_YUV411P,*/
+        AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV422P,
+        AV_PIX_FMT_YUV410P, AV_PIX_FMT_YUV411P,
+        AV_PIX_FMT_PAL8,
         AV_PIX_FMT_NONE
     },
     .priv_class     = &j2k_class,

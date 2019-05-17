@@ -29,14 +29,14 @@
 #include <inttypes.h>
 #include <math.h>
 
-#define BITSTREAM_READER_LE
-#include "libavutil/float_dsp.h"
 #include "libavutil/avassert.h"
-#include "avcodec.h"
-#include "get_bits.h"
-#include "fft.h"
-#include "internal.h"
+#include "libavutil/float_dsp.h"
 
+#define BITSTREAM_READER_LE
+#include "avcodec.h"
+#include "fft.h"
+#include "get_bits.h"
+#include "internal.h"
 #include "vorbis.h"
 #include "vorbisdsp.h"
 #include "xiph.h"
@@ -573,6 +573,11 @@ static int vorbis_parse_setup_hdr_floors(vorbis_context *vc)
                 return AVERROR(ENOMEM);
 
             rangebits = get_bits(gb, 4);
+            if (!rangebits && floor_setup->data.t1.partitions) {
+                av_log(vc->avctx, AV_LOG_ERROR,
+                       "A rangebits value of 0 is not compliant with the Vorbis I specification.\n");
+                return AVERROR_INVALIDDATA;
+            }
             rangemax = (1 << rangebits);
             if (rangemax > vc->blocksize[1] / 2) {
                 av_log(vc->avctx, AV_LOG_ERROR,
@@ -726,7 +731,7 @@ static int vorbis_parse_setup_hdr_residues(vorbis_context *vc)
         if (!res_setup->classifs)
             return AVERROR(ENOMEM);
 
-        ff_dlog(NULL, "    begin %d end %d part.size %d classif.s %d classbook %d \n",
+        ff_dlog(NULL, "    begin %"PRIu32" end %"PRIu32" part.size %u classif.s %"PRIu8" classbook %"PRIu8"\n",
                 res_setup->begin, res_setup->end, res_setup->partition_size,
                 res_setup->classifications, res_setup->classbook);
 
@@ -789,6 +794,11 @@ static int vorbis_parse_setup_hdr_mappings(vorbis_context *vc)
 
         if (get_bits1(gb)) {
             mapping_setup->coupling_steps = get_bits(gb, 8) + 1;
+            if (vc->audio_channels < 2) {
+                av_log(vc->avctx, AV_LOG_ERROR,
+                       "Square polar channel mapping with less than two channels is not compliant with the Vorbis I specification.\n");
+                return AVERROR_INVALIDDATA;
+            }
             mapping_setup->magnitude      = av_mallocz(mapping_setup->coupling_steps *
                                                        sizeof(*mapping_setup->magnitude));
             mapping_setup->angle          = av_mallocz(mapping_setup->coupling_steps *
@@ -866,7 +876,7 @@ static int create_map(vorbis_context *vc, unsigned floor_number)
     }
 
     for (idx = 0; idx <= n; ++idx) {
-        ff_dlog(NULL, "floor0 map: map at pos %d is %d\n", idx, map[idx]);
+        ff_dlog(NULL, "floor0 map: map at pos %d is %"PRId32"\n", idx, map[idx]);
     }
 
     return 0;
@@ -998,11 +1008,11 @@ static int vorbis_parse_id_hdr(vorbis_context *vc)
 
     ff_mdct_init(&vc->mdct[0], bl0, 1, -1.0);
     ff_mdct_init(&vc->mdct[1], bl1, 1, -1.0);
-    vc->fdsp = avpriv_float_dsp_alloc(vc->avctx->flags & CODEC_FLAG_BITEXACT);
+    vc->fdsp = avpriv_float_dsp_alloc(vc->avctx->flags & AV_CODEC_FLAG_BITEXACT);
     if (!vc->fdsp)
         return AVERROR(ENOMEM);
 
-    ff_dlog(NULL, " vorbis version %d \n audio_channels %d \n audio_samplerate %d \n bitrate_max %d \n bitrate_nom %d \n bitrate_min %d \n blk_0 %d blk_1 %d \n ",
+    ff_dlog(NULL, " vorbis version %"PRIu32" \n audio_channels %"PRIu8" \n audio_samplerate %"PRIu32" \n bitrate_max %"PRIu32" \n bitrate_nom %"PRIu32" \n bitrate_min %"PRIu32" \n blk_0 %"PRIu32" blk_1 %"PRIu32" \n ",
             vc->version, vc->audio_channels, vc->audio_samplerate, vc->bitrate_maximum, vc->bitrate_nominal, vc->bitrate_minimum, vc->blocksize[0], vc->blocksize[1]);
 
 /*
@@ -1739,7 +1749,9 @@ static int vorbis_decode_frame(AVCodecContext *avctx, void *data,
     ff_dlog(NULL, "packet length %d \n", buf_size);
 
     if (*buf == 1 && buf_size > 7) {
-        init_get_bits(gb, buf+1, buf_size*8 - 8);
+        if ((ret = init_get_bits8(gb, buf + 1, buf_size - 1)) < 0)
+            return ret;
+
         vorbis_free(vc);
         if ((ret = vorbis_parse_id_hdr(vc))) {
             av_log(avctx, AV_LOG_ERROR, "Id header corrupt.\n");
@@ -1763,7 +1775,9 @@ static int vorbis_decode_frame(AVCodecContext *avctx, void *data,
     }
 
     if (*buf == 5 && buf_size > 7 && vc->channel_residues && !vc->modes) {
-        init_get_bits(gb, buf+1, buf_size*8 - 8);
+        if ((ret = init_get_bits8(gb, buf + 1, buf_size - 1)) < 0)
+            return ret;
+
         if ((ret = vorbis_parse_setup_hdr(vc))) {
             av_log(avctx, AV_LOG_ERROR, "Setup header corrupt.\n");
             vorbis_free(vc);
@@ -1792,7 +1806,8 @@ static int vorbis_decode_frame(AVCodecContext *avctx, void *data,
         }
     }
 
-    init_get_bits(gb, buf, buf_size*8);
+    if ((ret = init_get_bits8(gb, buf, buf_size)) < 0)
+        return ret;
 
     if ((len = vorbis_parse_audio_packet(vc, channel_ptrs)) <= 0)
         return len;
@@ -1846,7 +1861,8 @@ AVCodec ff_vorbis_decoder = {
     .close           = vorbis_decode_close,
     .decode          = vorbis_decode_frame,
     .flush           = vorbis_decode_flush,
-    .capabilities    = CODEC_CAP_DR1,
+    .capabilities    = AV_CODEC_CAP_DR1,
+    .caps_internal   = FF_CODEC_CAP_INIT_CLEANUP,
     .channel_layouts = ff_vorbis_channel_layouts,
     .sample_fmts     = (const enum AVSampleFormat[]) { AV_SAMPLE_FMT_FLTP,
                                                        AV_SAMPLE_FMT_NONE },

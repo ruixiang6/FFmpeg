@@ -3,8 +3,8 @@
  * ported to MPlayer by Arpi <arpi@thot.banki.hu>
  * ported to libavcodec by Nick Kurshev <nickols_k@mail.ru>
  *
- * Copyright (c) 2002 The Xine Project
- * Copyright (c) 2002 The FFmpeg Project
+ * Copyright (c) 2002 The Xine project
+ * Copyright (c) 2002 The FFmpeg project
  *
  * SVQ1 Encoder (c) 2004 Mike Melanson <melanson@pcisys.net>
  *
@@ -154,7 +154,7 @@ static const uint8_t string_table[256] = {
     n4    = (mean << 16) + mean;
 
 static int svq1_decode_block_intra(GetBitContext *bitbuf, uint8_t *pixels,
-                                   int pitch)
+                                   ptrdiff_t pitch)
 {
     uint32_t bit_cache;
     uint8_t *list[63];
@@ -221,7 +221,7 @@ static int svq1_decode_block_intra(GetBitContext *bitbuf, uint8_t *pixels,
 }
 
 static int svq1_decode_block_non_intra(GetBitContext *bitbuf, uint8_t *pixels,
-                                       int pitch)
+                                       ptrdiff_t pitch)
 {
     uint32_t bit_cache;
     uint8_t *list[63];
@@ -307,7 +307,7 @@ static int svq1_decode_motion_vector(GetBitContext *bitbuf, svq1_pmv *mv,
 }
 
 static void svq1_skip_block(uint8_t *current, uint8_t *previous,
-                            int pitch, int x, int y)
+                            ptrdiff_t pitch, int x, int y)
 {
     uint8_t *src;
     uint8_t *dst;
@@ -325,7 +325,7 @@ static void svq1_skip_block(uint8_t *current, uint8_t *previous,
 
 static int svq1_motion_inter_block(HpelDSPContext *hdsp, GetBitContext *bitbuf,
                                    uint8_t *current, uint8_t *previous,
-                                   int pitch, svq1_pmv *motion, int x, int y,
+                                   ptrdiff_t pitch, svq1_pmv *motion, int x, int y,
                                    int width, int height)
 {
     uint8_t *src;
@@ -368,7 +368,7 @@ static int svq1_motion_inter_block(HpelDSPContext *hdsp, GetBitContext *bitbuf,
 
 static int svq1_motion_inter_4v_block(HpelDSPContext *hdsp, GetBitContext *bitbuf,
                                       uint8_t *current, uint8_t *previous,
-                                      int pitch, svq1_pmv *motion, int x, int y,
+                                      ptrdiff_t pitch, svq1_pmv *motion, int x, int y,
                                       int width, int height)
 {
     uint8_t *src;
@@ -446,7 +446,7 @@ static int svq1_motion_inter_4v_block(HpelDSPContext *hdsp, GetBitContext *bitbu
 static int svq1_decode_delta_block(AVCodecContext *avctx, HpelDSPContext *hdsp,
                                    GetBitContext *bitbuf,
                                    uint8_t *current, uint8_t *previous,
-                                   int pitch, svq1_pmv *motion, int x, int y,
+                                   ptrdiff_t pitch, svq1_pmv *motion, int x, int y,
                                    int width, int height)
 {
     uint32_t block_type;
@@ -618,9 +618,12 @@ static int svq1_decode_frame(AVCodecContext *avctx, void *data,
     uint8_t *current;
     int result, i, x, y, width, height;
     svq1_pmv *pmv;
+    int ret;
 
     /* initialize bit buffer */
-    init_get_bits8(&s->gb, buf, buf_size);
+    ret = init_get_bits8(&s->gb, buf, buf_size);
+    if (ret < 0)
+        return ret;
 
     /* decode frame header */
     s->frame_code = get_bits(&s->gb, 22);
@@ -685,7 +688,7 @@ static int svq1_decode_frame(AVCodecContext *avctx, void *data,
             width    = FFALIGN(s->width,  16);
             height   = FFALIGN(s->height, 16);
         } else {
-            if (avctx->flags & CODEC_FLAG_GRAY)
+            if (avctx->flags & AV_CODEC_FLAG_GRAY)
                 break;
             width    = FFALIGN(s->width  / 4, 16);
             height   = FFALIGN(s->height / 4, 16);
@@ -839,7 +842,7 @@ AVCodec ff_svq1_decoder = {
     .init           = svq1_decode_init,
     .close          = svq1_decode_end,
     .decode         = svq1_decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
+    .capabilities   = AV_CODEC_CAP_DR1,
     .flush          = svq1_flush,
     .pix_fmts       = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV410P,
                                                      AV_PIX_FMT_NONE },

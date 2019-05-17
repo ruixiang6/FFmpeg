@@ -145,7 +145,7 @@ typedef struct FourXContext {
     int mv[256];
     VLC pre_vlc;
     int last_dc;
-    DECLARE_ALIGNED(16, int16_t, block)[6][64];
+    DECLARE_ALIGNED(32, int16_t, block)[6][64];
     void *bitstream_buffer;
     unsigned int bitstream_buffer_size;
     int version;
@@ -498,7 +498,7 @@ static int decode_i_block(FourXContext *f, int16_t *block)
 
     if (get_bits_left(&f->gb) < 2){
         av_log(f->avctx, AV_LOG_ERROR, "%d bits left before decode_i_block()\n", get_bits_left(&f->gb));
-        return -1;
+        return AVERROR_INVALIDDATA;
     }
 
     /* DC coef */
@@ -532,7 +532,7 @@ static int decode_i_block(FourXContext *f, int16_t *block)
             }
             i    += code >> 4;
             if (i >= 64) {
-                av_log(f->avctx, AV_LOG_ERROR, "run %d oveflow\n", i);
+                av_log(f->avctx, AV_LOG_ERROR, "run %d overflow\n", i);
                 return 0;
             }
 
@@ -559,7 +559,7 @@ static inline void idct_put(FourXContext *f, int x, int y)
         idct(block[i]);
     }
 
-    if (!(f->avctx->flags & CODEC_FLAG_GRAY)) {
+    if (!(f->avctx->flags & AV_CODEC_FLAG_GRAY)) {
         for (i = 4; i < 6; i++)
             idct(block[i]);
     }
@@ -732,7 +732,7 @@ static int decode_i2_frame(FourXContext *f, const uint8_t *buf, int length)
         for (x = 0; x < width; x += 16) {
             unsigned int color[4] = { 0 }, bits;
             if (buf_end - buf < 8)
-                return -1;
+                return AVERROR_INVALIDDATA;
             // warning following is purely guessed ...
             color[0] = bytestream2_get_le16u(&g3);
             color[1] = bytestream2_get_le16u(&g3);
@@ -883,11 +883,11 @@ static int decode_frame(AVCodecContext *avctx, void *data,
         }
         cfrm = &f->cfrm[i];
 
-        if (data_size > UINT_MAX -  cfrm->size - FF_INPUT_BUFFER_PADDING_SIZE)
+        if (data_size > UINT_MAX -  cfrm->size - AV_INPUT_BUFFER_PADDING_SIZE)
             return AVERROR_INVALIDDATA;
 
         cfrm->data = av_fast_realloc(cfrm->data, &cfrm->allocated_size,
-                                     cfrm->size + data_size + FF_INPUT_BUFFER_PADDING_SIZE);
+                                     cfrm->size + data_size + AV_INPUT_BUFFER_PADDING_SIZE);
         // explicit check needed as memcpy below might not catch a NULL
         if (!cfrm->data) {
             av_log(f->avctx, AV_LOG_ERROR, "realloc failure\n");
@@ -1026,5 +1026,5 @@ AVCodec ff_fourxm_decoder = {
     .init           = decode_init,
     .close          = decode_end,
     .decode         = decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
+    .capabilities   = AV_CODEC_CAP_DR1,
 };
